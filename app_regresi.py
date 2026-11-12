@@ -1,90 +1,165 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
-
 
 def baca_file(file):
-    file = pd.read_csv(file)
-    return file
+    """Membaca file CSV atau Excel menjadi DataFrame."""
+    if file.name.lower().endswith(".csv"):
+        return pd.read_csv(file, sep=None, engine="python")
+    return pd.read_excel(file)
 
-def buat_array(df):
-    x = df[['luas','kamar','usia']]
-    x = np.array(x)
+def bangun_matriks(df, kolom_fitur, kolom_target, pakai_intersep):
+    """Membentuk matriks desain X dan vektor target y dari DataFrame."""
+    data = df[kolom_fitur + [kolom_target]].apply(pd.to_numeric, errors="raise")
+    if data.isnull().any().any():
+        raise ValueError("Terdapat sel kosong/NaN pada kolom yang dipilih.")
+    X = data[kolom_fitur].to_numpy(dtype=float)
+    y = data[kolom_target].to_numpy(dtype=float)
+    nama_w = [f"w{i+1}" for i in range(len(kolom_fitur))]
+    if pakai_intersep:
+        X = np.column_stack([np.ones(len(X)), X])
+        nama_w = ["w0"] + nama_w
+    return X, y, nama_w
 
-    y = df['harga']
-    y = np.array(y)
-    return x, y
-
-def hitung_norm_equation(x, y):
-    XtX = x.T @ x # perkalian matriks
-    Xty = x.T @ y
-
+def selesaikan_normal_equation(X, y):
+    """Menyelesaikan (X^T X) w = X^T y dengan solver."""
+    XtX = X.T @ X
+    Xty = X.T @ y
     if np.linalg.matrix_rank(XtX) < XtX.shape[0]:
-        raise ValueError("woi gaboleh") 
-
+        raise ValueError(
+            "Matriks XᵀX singular (tidak punya invers). Kemungkinan ada fitur yang "
+            "saling bergantung linear atau jumlah sampel kurang dari jumlah parameter."
+        )
     w = np.linalg.solve(XtX, Xty)
+    return XtX, Xty, w
 
-    return np.round(w)
+# Tampilan utama
+st.set_page_config(page_title="SPL Regresi Linear - Modul 8", layout="wide")
+st.title("Penyelesaian SPL dengan Streamlit (Modul 8)")
+st.caption("Regresi linear berganda melalui normal equation: (XᵀX) w = Xᵀy")
 
-def tampilan_hasil(x, y, w):
-    XtX = x.T @ x 
-    Xty = x.T @ y
-    
-    y_prediksi = x @ w
+file = st.file_uploader("Unggah file data (CSV / Excel)", type=["csv", "xlsx", "xls"])
 
-    rmse = np.sqrt(np.mean((y_prediksi - y) ** 2))
-    r2 = r2 = 1 - (np.sum((y - y_prediksi) ** 2) / np.sum((y - np.mean(y)) ** 2))
+if file is not None:
+    try:
+        df = baca_file(file)
+    except Exception as e:
+        st.error(f"Gagal membaca file: {e}")
+        st.stop()
 
-    tabel_perbandingan = pd.DataFrame({
-        "y_asli":y,
-        "y_prediksi":y_prediksi
-    })
-
-    return rmse, y_prediksi, r2, XtX, Xty, tabel_perbandingan
-
-def hitung_input(x_input, w):
-    y_prediksi = np.dot(x_input,w)
-    return y_prediksi
-
-# pembatas bagian UI streamlit
-st.title('pertemuan 6')
-
-file = st.file_uploader("silahkah masukan file csv anda")
-
-if file :
-    df = baca_file(file)
-    x, y = buat_array(df)
-    w = hitung_norm_equation(x, y)
-    rmse, y_prediksi, r2, XtX, Xty, tabel_perbandingan = tampilan_hasil(x, y, w)
-
+    st.subheader("1. Data yang diunggah")
     st.dataframe(df)
 
-    
-    col_1, col_2 = st.columns(2)
-    with col_1:
-        st.write("bobot didapat")
-        st.write(w)
-        st.dataframe(tabel_perbandingan)
+   
+    kolom_numerik = df.select_dtypes(include="number").columns.tolist()
+    if len(kolom_numerik) < 2:
+        st.error("Data harus memiliki minimal 2 kolom numerik (fitur dan target).")
+        st.stop()
+
+    st.subheader("2. Pilih variabel")
+    col1, col2 = st.columns(2)
+    with col1:
+        kolom_target = st.selectbox(
+            "Kolom target (y)", kolom_numerik, index=len(kolom_numerik) - 1
+        )
+    with col2:
+        abaikan = ("sampel", "no", "id", "nomor")
+        default_fitur = [
+            k for k in kolom_numerik
+            if k != kolom_target and k.lower() not in abaikan
+        ]
+        kolom_fitur = st.multiselect(
+            "Kolom fitur (x)", [k for k in kolom_numerik if k != kolom_target],
+            default=default_fitur,
+        )
+
+    pakai_intersep = st.checkbox("Tambahkan intersep (w0)", value=True)
+
+    if st.button("Selesaikan", type="primary"):
+        try:
+            if not kolom_fitur:
+                raise ValueError("Pilih minimal satu kolom fitur.")
+            X, y, nama_w = bangun_matriks(df, kolom_fitur, kolom_target, pakai_intersep)
+            XtX, Xty, w = selesaikan_normal_equation(X, y)
+            st.session_state["hasil"] = dict(
+                file=file.name, fitur=kolom_fitur, target=kolom_target,
+                X=X, y=y, nama_w=nama_w, XtX=XtX, Xty=Xty, w=w,
+                intersep=pakai_intersep,
+            )
+        except Exception as e:
+            st.session_state.pop("hasil", None)
+            st.error(f"Terjadi kesalahan: {e}")
+
+  
+    h = st.session_state.get("hasil")
+    if h and h["file"] == file.name:
+        X, y, w, nama_w = h["X"], h["y"], h["w"], h["nama_w"]
+        w = w + 0.0
+
+        st.subheader("3. Langkah perhitungan")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Matriks desain X**")
+            st.dataframe(pd.DataFrame(X, columns=nama_w if h["intersep"] else h["fitur"]))
+        with c2:
+            st.markdown("**Vektor y**")
+            st.dataframe(pd.DataFrame(y, columns=[h["target"]]))
+
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown("**XᵀX**")
+            st.dataframe(pd.DataFrame(h["XtX"], index=nama_w, columns=nama_w))
+        with c4:
+            st.markdown("**Xᵀy**")
+            st.dataframe(pd.DataFrame(h["Xty"], index=nama_w, columns=["Xᵀy"]))
+
+        st.subheader("4. Solusi w")
+        hasil_w = pd.DataFrame({"parameter": nama_w, "nilai": np.round(w, 4)})
+        st.dataframe(hasil_w, hide_index=True)
+
+        suku = []
+        for nama, nilai, fitur in zip(nama_w, w, ([None] + h["fitur"]) if h["intersep"] else h["fitur"]):
+            suku.append(f"{nilai:.4f}" if fitur is None else f"{nilai:.4f}·{fitur}")
+        st.info(f"Model: {h['target']} = " + " + ".join(suku))
+
+        # Evaluasi & Jumlah Galat
+        y_hat = X @ w
+        galat = y - y_hat
+        total_galat = float(np.sum(galat))
+        sse = float(np.sum(galat ** 2))
+        sst = float(np.sum((y - y.mean()) ** 2))
+        r2 = 1 - sse / sst if sst > 0 else float("nan")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("RMSE", f"{np.sqrt(np.mean(galat ** 2)):.4f}")
+        m2.metric("R²", f"{r2:.4f}")
+        m3.metric("Jumlah Galat (Σe)", f"{total_galat:.6f}")
+
+        st.markdown("**Perbandingan nilai aktual dan prediksi**")
+        df_pred = pd.DataFrame({
+            "aktual": y,
+            "prediksi": np.round(y_hat, 4),
+            "galat": np.round(galat, 4)
+        })
+        st.dataframe(df_pred)
+
+        st.download_button(
+            "Unduh hasil prediksi (CSV)",
+            df_pred.to_csv(index=False).encode("utf-8"),
+            file_name="hasil_prediksi.csv", mime="text/csv",
+        )
+
+
+        st.subheader("5. Prediksi data baru")
+        nilai_baru = []
+        kolom_in = st.columns(len(h["fitur"]))
+        for kol, nama in zip(kolom_in, h["fitur"]):
+            nilai_baru.append(kol.number_input(nama, value=float(df[nama].mean())))
+        x_baru = np.array(([1.0] if h["intersep"] else []) + nilai_baru)
+        st.success(f"Prediksi {h['target']} = {float(x_baru @ w):.2f}")
+else:
+    st.info("Silakan unggah file CSV/Excel terlebih dahulu.")
         
-    with col_2:
-        st.write(f" ini hasil rmse {rmse}")
-        st.write(f" ini hasil r2 {r2}")
-        st.write(f" ini adalah A {XtX}")
-        st.write(f" ini adalah hasil B {Xty}")
-        st.write(f"hasil persamaan anda {w[0]}X1 {w[1]}X2 {w[2]}X3")
-
-        kamar = st.number_input("masukan kamar", step=1)
-        usia = st.number_input("masukan usia", step=1)
-        luas = st.number_input("masukan luas", step=1)
-
-        x_input = np.array([luas, kamar, usia])
-        
-        if st.button("tekan"):
-            y_prediksi = hitung_input(x_input, w)
-            st.write(f"hore prediksi model anda adalah {y_prediksi}")
-        
 
 
-# # df.info()
-# print(df.head(5))
 
